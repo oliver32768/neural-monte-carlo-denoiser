@@ -9,4 +9,4 @@ This implementation additionally uses the optical-flow vectors to compute an exp
 
 ![1 Sample-per-pixel input vs. Denoised output](videos/comparison-anf.gif)
 
-Note: the above GIF was heavily compressed to fit within the GitHub file size limits. Please see the [YouTube mirror of the same video](https://www.youtube.com/watch?v=_xkhUjZIMFE) for a higher quality render. All scenes depicted were **not** included in the training set.
+Note: the above GIF (not visible while loading) was heavily compressed to fit within the GitHub file size limits. Please see the [YouTube mirror of the same video](https://www.youtube.com/watch?v=_xkhUjZIMFE) for a higher quality render. All scenes depicted were **not** included in the training set.
