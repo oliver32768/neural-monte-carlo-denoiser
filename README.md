@@ -1,5 +1,5 @@
 # Neural Monte Carlo Denoiser
-Implementation of a neural network for denoising [Monte Carlo path-traced](https://en.wikipedia.org/wiki/Path_tracing) renders of virtual scenes from only single-sample inputs. Contains dataset generation and loading scripts.
+Implementation of a neural network for denoising [Monte Carlo path-traced](https://en.wikipedia.org/wiki/Path_tracing) renders of virtual scenes from only single-sample inputs. Additionally contains dataset generation and loading scripts.
 
 The main branch contains an implementation of the SIGGRAPH '21 paper [Interactive Monte Carlo Denoising using Affinity of Neural Features](https://www.mustafaisik.net/pdfs/isik2021-anf.pdf) by Isik et al. This uses a U-Net like architecture to predict neural features for each pixel from the noisy input radiance (demodulated point-wise by albedo) and auxiliary feature buffers, from which a set of four kernels are computed for each pixel and iteratively applied to the respective pixel neighborhoods. The fourth kernel is applied to the optical-flow warped output of the previous frame. 
 
