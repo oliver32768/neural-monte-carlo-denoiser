@@ -5,6 +5,8 @@ The main branch contains an implementation of the SIGGRAPH '21 paper [Interactiv
 
 This implementation additionally uses the optical-flow vectors to compute an exponential moving average over the model outputs, with geometry aware heuristics to prevent blending of uncorrelated pixels.
 
+## Video
+
 ![1 Sample-per-pixel input vs. Denoised output](videos/comparison-anf.gif)
 
 Note: the above GIF was heavily compressed to fit within the GitHub file size limits. Please see the [YouTube mirror of the same video](https://www.youtube.com/watch?v=_xkhUjZIMFE) for a higher quality render. All scenes depicted were **not** included in the training set.
