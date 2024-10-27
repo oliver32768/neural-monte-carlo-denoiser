@@ -9,7 +9,7 @@ import math
 class MonteCarloDataset(Dataset):
     """Dataset containing RGB, Normal, Depth and Albedo buffers of Monte Carlo renders"""
 
-    def __init__(self, root_dir, subseq_len, transform=None):
+    def __init__(self, root_dir, subseq_len, hdr_normals, transform=None):
         """
         Args:
             root_dir (string): Directory containing image subdirectories 
@@ -20,6 +20,8 @@ class MonteCarloDataset(Dataset):
         self.frames_total = self.count_frames(root_dir)
         self.num_valid_startpoints = self.frames_total - ((self.subseq_len - 1) * self.num_scenes)
         self.transform = transform
+        self.normal_path = 'hdr_normal' if hdr_normals else 'normal'
+        self.normal_ext = 'exr' if hdr_normals else 'png'
 
     def __len__(self):
         return self.num_valid_startpoints
@@ -35,7 +37,10 @@ class MonteCarloDataset(Dataset):
 
         scene = self.scene_names[scene_idx]
 
-        frames = np.array([ x for x in range(idx, idx + self.subseq_len) ]) + 1
+        f = 0
+        frames = np.array([ max(x - (f := f + 1), idx) if torch.rand(1).item() < 0.1 else x - f for x in range(idx, idx + self.subseq_len) ]) + 1
+        if torch.rand(1).item() < 0.5:
+            frames = frames[::-1]
         frames = frames % (self.frames_per_scene + 1)
         frames = [ str(f).zfill(5) for f in frames ]
 
@@ -44,30 +49,27 @@ class MonteCarloDataset(Dataset):
 
         datatype = np.float32
 
-        albedo = np.empty((self.subseq_len, 1024, 1024, 3), dtype=datatype)
-        depth = np.empty((self.subseq_len, 1024, 1024, 1), dtype=datatype)
-        normal = np.empty((self.subseq_len, 1024, 1024, 3), dtype=datatype)
-        rgb_gt = np.empty((self.subseq_len, 1024, 1024, 3), dtype=datatype)
-        rgb_1spp = np.empty((self.subseq_len, 1024, 1024, 3), dtype=datatype)
-        motion = np.empty((self.subseq_len, 1024, 1024, 4), dtype=datatype)
-        normal_vanilla = np.empty((self.subseq_len, 1024, 1024, 3), dtype=datatype)
+        h = 1024
+        w = 1024
+
+        albedo = np.empty((self.subseq_len, h, w, 3), dtype=datatype)
+        depth = np.empty((self.subseq_len, h, w, 1), dtype=datatype)
+        normal = np.empty((self.subseq_len, h, w, 3), dtype=datatype)
+        rgb_gt = np.empty((self.subseq_len, h, w, 3), dtype=datatype)
+        rgb_1spp = np.empty((self.subseq_len, h, w, 3), dtype=datatype)
 
         for i, frame in enumerate(frames):
             albedo[i] = cv2.cvtColor(cv2.imread(os.path.join(self.root_dir, 'albedo', f'albedo_{scene}_{frame}_gt.exr'), cv2.IMREAD_UNCHANGED), cv2.COLOR_BGR2RGB).astype(datatype)
             depth[i] = np.expand_dims(cv2.imread(os.path.join(self.root_dir, 'depth', f'depth_{scene}_{frame}_gt.exr'), cv2.IMREAD_UNCHANGED)[:, :, 0], axis=-1).astype(datatype)
-            normal[i] = cv2.cvtColor(cv2.imread(os.path.join(self.root_dir, 'hdr_normal', f'normal_{scene}_{frame}_gt.exr'), cv2.IMREAD_UNCHANGED), cv2.COLOR_BGR2RGB).astype(datatype)
+            normal[i] = cv2.cvtColor(cv2.imread(os.path.join(self.root_dir, self.normal_path, f'normal_{scene}_{frame}_gt.{self.normal_ext}'), cv2.IMREAD_UNCHANGED), cv2.COLOR_BGR2RGB).astype(datatype)
             rgb_gt[i] = cv2.cvtColor(cv2.imread(os.path.join(self.root_dir, 'rgb', f'rgb_{scene}_{frame}_gt.exr'), cv2.IMREAD_UNCHANGED), cv2.COLOR_BGR2RGB).astype(datatype)
             rgb_1spp[i] = cv2.cvtColor(cv2.imread(os.path.join(self.root_dir, 'rgb', f'rgb_{scene}_{frame}_{samples[i]}.exr'), cv2.IMREAD_UNCHANGED), cv2.COLOR_BGR2RGB).astype(datatype)
-            motion[i] = cv2.cvtColor(cv2.imread(os.path.join(self.root_dir, 'motion', f'motion_{scene}_{frame}_gt.exr'), cv2.IMREAD_UNCHANGED), cv2.COLOR_BGRA2RGBA).astype(datatype)
-            normal_vanilla[i] = cv2.cvtColor(cv2.imread(os.path.join(self.root_dir, 'normal', f'normal_{scene}_{frame}_gt.png'), cv2.IMREAD_UNCHANGED), cv2.COLOR_BGR2RGB).astype(datatype)
 
         frame = {'albedo': albedo, 
                  'depth': depth, 
                  'normal': normal, 
                  'rgb_gt': rgb_gt, 
-                 'rgb_1spp': rgb_1spp,
-                 'motion': motion,
-                 'normal_vanilla': normal_vanilla}
+                 'rgb_1spp': rgb_1spp}
 
         if self.transform:
             frame = self.transform(frame)
@@ -117,24 +119,20 @@ class MonteCarloTestset(Dataset):
         rgb_gt = np.empty((1, self.h, self.w, 3), dtype=datatype)
         rgb_1spp = np.empty((1, self.h, self.w, 3), dtype=datatype)
         motion = np.empty((1, self.h, self.w, 4), dtype=datatype)
-        normal_vanilla = np.empty((1, self.h, self.w, 3), dtype=datatype)
 
         albedo[0] = cv2.cvtColor(cv2.imread(os.path.join(self.root_dir, 'albedo', f'albedo_{scene}_{frame}_gt.exr'), cv2.IMREAD_UNCHANGED)[:self.h, :self.w], cv2.COLOR_BGR2RGB).astype(datatype)
         depth[0] = np.expand_dims(cv2.imread(os.path.join(self.root_dir, 'depth', f'depth_{scene}_{frame}_gt.exr'), cv2.IMREAD_UNCHANGED)[:self.h, :self.w, 0], axis=-1).astype(datatype)
-        normal[0] = cv2.cvtColor(cv2.imread(os.path.join(self.root_dir, 'hdr_normal', f'normal_{scene}_{frame}_gt.exr'), cv2.IMREAD_UNCHANGED)[:self.h, :self.w], cv2.COLOR_BGR2RGB).astype(datatype)
+        normal[0] = cv2.cvtColor(cv2.imread(os.path.join(self.root_dir, 'normal', f'normal_{scene}_{frame}_gt.png'), cv2.IMREAD_UNCHANGED)[:self.h, :self.w], cv2.COLOR_BGR2RGB).astype(datatype)
         rgb_gt[0] = cv2.cvtColor(cv2.imread(os.path.join(self.root_dir, 'rgb', f'rgb_{scene}_{frame}_gt.exr'), cv2.IMREAD_UNCHANGED)[:self.h, :self.w], cv2.COLOR_BGR2RGB).astype(datatype)
         rgb_1spp[0] = cv2.cvtColor(cv2.imread(os.path.join(self.root_dir, 'rgb', f'rgb_{scene}_{frame}_000.exr'), cv2.IMREAD_UNCHANGED)[:self.h, :self.w], cv2.COLOR_BGR2RGB).astype(datatype)
         motion[0] = cv2.cvtColor(cv2.imread(os.path.join(self.root_dir, 'motion', f'motion_{scene}_{frame}_gt.exr'), cv2.IMREAD_UNCHANGED)[:self.h, :self.w], cv2.COLOR_BGRA2RGBA).astype(datatype)
-        normal_vanilla[0] = cv2.cvtColor(cv2.imread(os.path.join(self.root_dir, 'normal', f'normal_{scene}_{frame}_gt.png'), cv2.IMREAD_UNCHANGED)[:self.h, :self.w], cv2.COLOR_BGR2RGB).astype(datatype)
 
         frame = {'albedo': albedo, 
                  'depth': depth, 
                  'normal': normal, 
-                 'rgb_1spp': rgb_1spp,
                  'rgb_gt': rgb_gt, 
-                 'motion': motion,
-                 'normal_vanilla': normal_vanilla,
-                 'rgb_in': rgb_1spp.copy()}
+                 'rgb_1spp': rgb_1spp,
+                 'motion': motion}
 
         if self.transform:
             frame = self.transform(frame)
@@ -144,20 +142,16 @@ class MonteCarloTestset(Dataset):
         return frame
     
     def count_frames(self, root_dir):
-        self.scene_names = set() 
+        self.scene_names = set()
         max_frame = -1
 
         for fname in os.listdir(os.path.join(root_dir, 'rgb')):
             split_fname = fname.split('.')[0].split('_')
-            scene_name = '_'.join(split_fname[1:len(split_fname) - 2])
-            self.scene_names.add(scene_name)
-
-            frame_number = int(split_fname[-2])
-            max_frame = max(frame_number, max_frame)
+            self.scene_names.add('_'.join(split_fname[1:len(split_fname) - 2]))
+            max_frame = max(int(split_fname[-2]), max_frame)
 
         self.num_scenes = len(self.scene_names)
-
-        self.frames_per_scene = max_frame
+        self.frames_per_scene = max_frame 
 
         self.scene_names = list(self.scene_names)
 

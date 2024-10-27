@@ -13,7 +13,7 @@ class RandomCrop(object):
             self.output_size = output_size
 
     def __call__(self, frames):
-        albedo, depth, normal, rgb_gt, rgb_1spp, motion, normal_vanilla = (frames[x] for x in ['albedo', 'depth', 'normal', 'rgb_gt', 'rgb_1spp', 'motion', 'normal_vanilla'])
+        albedo, depth, normal, rgb_gt, rgb_1spp = (frames[x] for x in ['albedo', 'depth', 'normal', 'rgb_gt', 'rgb_1spp'])
 
         h, w = albedo[0].shape[:2]
         new_h, new_w = self.output_size
@@ -26,17 +26,12 @@ class RandomCrop(object):
         normal = normal[:, top:top+new_h, left:left+new_w]
         rgb_gt = rgb_gt[:, top:top+new_h, left:left+new_w]
         rgb_1spp = rgb_1spp[:, top:top+new_h, left:left+new_w]
-        motion = motion[:, top:top+new_h, left:left+new_w]
-        normal_vanilla = normal_vanilla[:, top:top+new_h, left:left+new_w]
 
         return {'albedo': albedo, 
                 'depth': depth, 
                 'normal': normal, 
                 'rgb_gt': rgb_gt, 
-                'rgb_1spp': rgb_1spp,
-                'motion': motion,
-                'rgb_in': rgb_1spp.copy(),
-                'normal_vanilla': normal_vanilla}
+                'rgb_1spp': rgb_1spp}
     
 class RandomModulate(object):
     """Multiply RGB channels by a random value each in [a,b] | a,b >= 0. Effectively acts as a hue shift"""
@@ -87,29 +82,38 @@ class AlbedoDemodulate(object):
     """
 
     def __call__(self, frames):
-        albedo, rgb_1spp, rgb_in = frames['albedo'], frames['rgb_1spp'], frames['rgb_in']
+        albedo, rgb_1spp = frames['albedo'], frames['rgb_1spp']
 
         max_rgb = np.max(rgb_1spp)
         min_rgb = np.min(rgb_1spp)
 
-        max_rgb_in = np.max(rgb_in)
-        min_rgb_in = np.min(rgb_in)
-        
         with np.errstate(divide='ignore', invalid='ignore'):
-            frames['rgb_in'] = np.clip(np.nan_to_num(rgb_in / albedo, posinf=max_rgb_in, neginf=min_rgb_in, nan=min_rgb_in), a_min=min_rgb_in, a_max=max_rgb_in)
             frames['rgb_1spp'] = np.clip(np.nan_to_num(rgb_1spp / albedo, posinf=max_rgb, neginf=min_rgb, nan=min_rgb), a_min=min_rgb, a_max=max_rgb)
 
         return frames
     
 class AlbedoDemodulateBoring(object):
     def __call__(self, frames):
-        albedo, rgb_1spp, rgb_in = frames['albedo'], frames['rgb_1spp'], frames['rgb_in']
+        rgb_1spp = frames['rgb_1spp']
 
-        frames['rgb_1spp'] = rgb_1spp / (albedo + 1e-2) # Both HDR, i.e. same color space
-        frames['rgb_in'] = rgb_in / (albedo + 1e-2) # This one is remodulated by non-normalised, non-tonemapped albedo
+        frames['albedo'] = frames['albedo'] + 1e-2
+        frames['rgb_1spp'] = rgb_1spp / frames['albedo']
 
         return frames
+    
+class Tonemap(object):
+    def __init__(self, gamma):
+        self.gamma = gamma
 
+    def __call__(self, frames):
+        rgb_gt, rgb_1spp, albedo = frames['rgb_gt'], frames['rgb_1spp'], frames['albedo']
+
+        frames['rgb_gt'] = np.max(rgb_gt, 0.0) ** self.gamma
+        frames['rgb_1spp'] = np.max(rgb_1spp, 0.0) ** self.gamma
+        frames['albedo'] = np.max(albedo, 0.0) ** self.gamma
+        
+        return frames
+    
 class Flatten(object):
     """
     Raise RGB and Albedo buffers to the power gamma. 
@@ -131,23 +135,17 @@ class Flatten(object):
         frames['albedo'] = albedo ** self.gamma
 
         return frames
-    
-class TonemapIsik(object):
-    def __call__(self, frames):
-        frames['rgb_1spp'] = np.log(1 + frames['rgb_1spp']) # Implicitly tonemaps the albedo demodulation
-        return frames
         
 class Normalise(object):
     """Divide image buffers by maximum value present in the sequence"""
 
     def __call__(self, frames):
-        normal, albedo, rgb_1spp = frames['normal'], frames['albedo'], frames['rgb_1spp']
+        normal = frames['normal']
 
-        eps = 1e-10
+        frames['normal_vanilla'] = normal.copy()
 
-        frames['normal']   = (normal - normal.min()) / (normal.max() - normal.min() + eps)
-        frames['albedo_f'] = (albedo - albedo.min()) / (albedo.max() - albedo.min() + eps) # Appends a normalised version of the albedo
-        frames['rgb_1spp'] = (rgb_1spp - rgb_1spp.min()) / (rgb_1spp.max() - rgb_1spp.min() + eps)
+        if np.max(normal) > 0.0:
+            frames['normal'] = normal / np.max(normal)
 
         return frames
     
@@ -165,15 +163,12 @@ class ToTensor(object):
         rgb_gt = torch.from_numpy(frames['rgb_gt'].transpose(0, 3, 1, 2).copy())
         rgb_1spp = torch.from_numpy(frames['rgb_1spp'].transpose(0, 3, 1, 2).copy())
         motion = torch.from_numpy(frames['motion'].transpose(0, 3, 1, 2).copy())
-        rgb_in = torch.from_numpy(frames['rgb_in'].transpose(0, 3, 1, 2).copy())
         normal_vanilla = torch.from_numpy(frames['normal_vanilla'].transpose(0, 3, 1, 2).copy())
 
-        inputs = torch.cat((rgb_1spp, normal, albedo), dim=1) 
+        inputs = torch.cat((rgb_1spp, normal, depth), dim=1)
 
         return {'inputs': inputs,
                 'targets': rgb_gt,
                 'albedo': albedo,
                 'motion': motion,
-                'rgb_in': rgb_in,
-                'depth': depth,
-                'normal_vanilla': normal_vanilla} 
+                'normal_vanilla': normal_vanilla}

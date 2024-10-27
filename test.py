@@ -1,3 +1,5 @@
+# test.py
+
 from train_utils import *
 from transform import *
 from LoG import *
@@ -48,8 +50,9 @@ def test(
                                  width=width,
                                  height=height,
                                  transform=transforms.Compose([
-                                     AlbedoDemodulateBoring(),
-                                     TonemapIsik(),
+                                     Flatten(gamma=0.2),
+                                     AlbedoDemodulate(),
+                                     Normalise(),
                                      ToTensor()
                                  ]))
     
@@ -88,7 +91,7 @@ def test(
         psnr_scene = trmae_scene = ssim_scene = rmse_scene = 0
 
         for i, batch in enumerate(test_loader):
-            inputs, targets, albedo, motion, rgb_in, normal_vanilla, depth = (batch[x].to(device) for x in ['inputs', 'targets', 'albedo', 'motion', 'rgb_in', 'normal_vanilla', 'depth'])
+            inputs, targets, albedo, motion, normal_vanilla = (batch[x].to(device) for x in ['inputs', 'targets', 'albedo', 'motion', 'normal_vanilla'])
 
             # Initialise 2-frame buffers for output and target images based on batch size
             if output_history is None:
@@ -103,7 +106,7 @@ def test(
             if last_scene is not None and scene != last_scene: # Dataloader advanced to next scene
                 num_scenes += 1
                 
-                model.clear_state()
+                model.clear_hidden_state()
                 output_history.zero_() # 1 = this output, 0 = last output
                 target_history.zero_() 
 
@@ -126,24 +129,25 @@ def test(
 
             # Forward
             target = targets[:, 0]
-            gbuffers, motion_vec, rgb = inputs[:, 0], motion[:, 0], rgb_in[:, 0]
-            output, _, _ = model(gbuffers, motion_vec, rgb, normal_vanilla[:, 0], depth[:, 0]) 
-            output *= (albedo[:, 0] + 1e-2)
+            input = inputs[:, 0]
+
+            output = model(input) 
+            output *= albedo[:, 0]
 
             if flow_out:
                 if scene_frame == 0:
                     prev_normal = ((normal_vanilla[:, 0].clone() - 127.0) / 127.0) 
                     prev_normal = prev_normal / torch.sqrt((prev_normal ** 2).sum(dim=1))
-                    prev_depth = depth[:, 0].clone()
+                    prev_depth = input[:, 6].clone().unsqueeze(1)
                     prev_out = output.clone()
                 elif scene_frame > 0:
-                    fw_prev_out = flow_warp_utils(prev_out, motion[:, 0], 'nearest', device)
-                    fw_prev_normal = flow_warp_utils(prev_normal, motion[:, 0], 'nearest', device)
-                    fw_prev_depth = flow_warp_utils(prev_depth, motion[:, 0], 'nearest', device)
+                    fw_prev_out = flow_warp(prev_out, motion[:, 0], 'nearest', device)
+                    fw_prev_normal = flow_warp(prev_normal, motion[:, 0], 'nearest', device)
+                    fw_prev_depth = flow_warp(prev_depth, motion[:, 0], 'nearest', device)
 
                     # Disocclusion mask
-                    cur_depth = depth[:, 0].clone()
-                    mask_depth = (torch.abs(cur_depth - fw_prev_depth) > 0.1)
+                    cur_depth = input[:, 6].clone().unsqueeze(1)
+                    mask_depth = (torch.abs(cur_depth - fw_prev_depth) > 0.2)
 
                     cur_normal = (normal_vanilla[:, 0].clone() - 127.0) / 127.0
                     cur_normal = cur_normal / torch.sqrt((cur_normal ** 2).sum(dim=1))
@@ -168,10 +172,13 @@ def test(
                     output = taa_out.clone()
                     prev_out = output.clone()
 
-            if stateless:
-                model.clear_state()
+            output **= (1/0.2) # Undo tonemapping, this will look HDR now
+            target **= (1/0.2)
 
-            # Tonemap
+            if stateless:
+                model.clear_hidden_state()
+
+            # Tonemap. TODO: This may cause division by zero. Isik specified x in R+ but idk how he's achieving that
             tonemapped_output = (output / (1 + output)) ** (1 / 2.4)
             tonemapped_target = (target / (1 + target)) ** (1 / 2.4)
 
@@ -187,7 +194,7 @@ def test(
             # Temporal differencing images. Computed from raw HDR, not tonemapped
             dt_outputs, dt_targets = finite_differencing(output_history, target_history)
 
-            # Compute test metrics
+            # Compute test metrics TODO: 2017 may be advantaged here due to clipping
             psnr_scene += psnr(norm_output, norm_target)
             trmae_scene += trmae(dt_outputs, dt_targets)
             ssim_scene += ssim(norm_output, norm_target, data_range=1, size_average=True)
@@ -199,11 +206,11 @@ def test(
                 else:
                     render_filpath = os.path.join(render_dir, 'test', f'test-{scene}-{scene_frame}.png')
 
-                top = (rgb_in[:, 0]).unsqueeze(1) ** (1 / 2.2)
+                top = (input[:, :3] ** (1/0.2)).unsqueeze(1) ** (1 / 2.2)
                 middle = output.unsqueeze(1) ** (1 / 2.2)
                 bottom = target.unsqueeze(1) ** (1 / 2.2)
 
-                save_sequence_test(top, bottom, middle, f'Frame {i}', render_filpath)
+                save_sequence_test(top, middle, bottom, f'Frame {i}', render_filpath)
 
             frame_str = str(scene_frame).zfill(3)
             psnr_scene_avg = psnr_scene / (scene_frame+1)
@@ -214,7 +221,7 @@ def test(
 
             scene_frame += 1
 
-        # Have to do this for the last scene
+        # Have to do this for the last scene - sloppy
         num_scenes += 1
         psnr_all += psnr_scene_avg
         trmae_all += trmae_scene_avg
@@ -240,7 +247,7 @@ def main():
     logging.info(f'Using device {device}')
     
     logging.info('Initializing Autoencoder...')
-    model = IsikNet(in_channel=9, embedding_dims=32, kernel_size=args.kernel_size, device=device)
+    model = Autoencoder(in_channel=7, kernel_size=args.kernel_size)
     
     logging.info('Transferring Autoencoder to GPU...')
     model.to(device=device)

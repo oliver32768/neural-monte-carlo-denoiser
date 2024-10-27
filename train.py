@@ -25,8 +25,7 @@ def parse_cli_args():
     parser.add_argument("--num-epochs", help="Force training to stop after a certain number of epochs", type=int)
     parser.add_argument("--patience", help="The number of epochs with (loss > min_val_loss + min_delta) not interuppted by (loss < min_val_loss) needed to stop training early", type=int, required=True)
     parser.add_argument("--min-delta", help="If (loss > min_val_loss + min_delta) the early stopping counter increments. If loss exceeds min_val_loss by less than least min_delta, the counter is sustained. If loss is less than min_val_loss, the counter is reset to 0", type=float, required=True)
-    parser.add_argument("--seq-len", help="Number of frames in each minibatch element", type=int)
-    parser.add_argument("--batch-size", help="Number of sequences in each minibatch", type=int)
+    parser.add_argument("--hdr-normals", help="Use HDR normals instead of SDR", action="store_true")
     return parser.parse_args()
 
 def train_model(
@@ -49,15 +48,18 @@ def train_model(
         dataset_dir,
         save_renders,
         patience,
-        min_delta
+        min_delta,
+        hdr_normals
 ):
     logging.info('Initializing dataset...')
     dataset = MonteCarloDataset(root_dir=dataset_dir,
                                 subseq_len=sequence_len,
+                                hdr_normals=hdr_normals,
                                 transform=transforms.Compose([
                                     RandomCrop(crop_size),
-                                    AlbedoDemodulateBoring(),
-                                    TonemapIsik(),
+                                    Flatten(gamma=0.2),
+                                    AlbedoDemodulate(),
+                                    Normalise(),
                                     ToTensor()
                                 ]))
     
@@ -91,7 +93,8 @@ def train_model(
 
     early_stopper = EarlyStopper(log_filepath=log_filepath, patience=patience, min_delta=min_delta)
 
-    l1_loss = nn.L1Loss()
+    l1 = nn.L1Loss()
+    LoG_filter = LoG(sigma=1.5, device=device)
 
     regular_ckpt_filename = f'{identifier}-regular.pt'
     best_ckpt_filename = f'{identifier}-best.pt'
@@ -150,28 +153,26 @@ def train_model(
     for epoch in range(start_epoch, num_epochs):
         epoch_str = str(epoch+1).zfill(zfill_epoch)
         model.train()
-        loss_epoch = l_recons_epoch = l_temporal_epoch = l_reg_epoch = 0
+        loss_epoch = l_recons_epoch = l_temporal_epoch = l_grad_epoch = 0
         for i, batch in enumerate(train_loader):
-            inputs, targets, albedo, motion, rgb_in, normal_vanilla, depth = (batch[x].to(device) for x in ['inputs', 'targets', 'albedo', 'motion', 'rgb_in', 'normal_vanilla', 'depth'])
+            inputs, targets, albedo = (batch[x].to(device) for x in ['inputs', 'targets', 'albedo'])
             N, M, C, H, W = targets.shape
             outputs = torch.zeros(N, M, C, H, W, device=device)
-            params_a = torch.zeros(N, M, 3, H, W, device=device)
-            params_b = torch.zeros(N, M, H, W, device=device)
 
             for j in range(M):
-                output, params_a[:, j], params_b[:, j] = model(inputs[:, j], motion[:, j], rgb_in[:, j], normal_vanilla[:, j], depth[:, j]) 
-                outputs[:, j] = output * (albedo[:, j] + 1e-2)
+                output = model(inputs[:, j]) 
+                outputs[:, j] = output * albedo[:, j]
 
-            l_recons = SMAPE(outputs, targets)
-            l_temporal = 0.25 * SMAPE(*finite_differencing(outputs, targets))
-            l_reg = 1e-5 * reg_loss(params_a, params_b)
-            loss = l_recons + l_temporal + l_reg
+            l_recons = 0.8 * l1(outputs, targets)
+            l_temporal = 0.1 * l1(*finite_differencing(outputs, targets))
+            l_grad = 0.1 * l1(LoG_filter(outputs), LoG_filter(targets))
+            loss = l_recons + l_temporal + l_grad
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             
-            model.clear_state()
+            model.clear_hidden_state()
             
             with torch.no_grad():
                 if save_renders is not None and i % ((train_len - 1) // save_renders) == 0:
@@ -183,31 +184,29 @@ def train_model(
                 loss_epoch += loss
                 l_recons_epoch += l_recons
                 l_temporal_epoch += l_temporal
-                l_reg_epoch += l_reg
-                logging.info(f'Epoch {epoch_str}/{num_epochs} Train Batch {batch_str}/{train_len} | L: {loss_epoch/(i+1):.5f} LR: {l_recons_epoch/(i+1):.5f} LT: {l_temporal_epoch/(i+1):.5f} Lreg: {l_reg_epoch/(i+1):.5f}')
+                l_grad_epoch += l_grad
+                logging.info(f'Epoch {epoch_str}/{num_epochs} Train Batch {batch_str}/{train_len} | L: {loss_epoch/(i+1):.5f} LR: {l_recons_epoch/(i+1):.5f} LT: {l_temporal_epoch/(i+1):.5f} LG: {l_grad_epoch/(i+1):.5f}')
 
         # Validation
         with torch.inference_mode():
             model.eval()
-            loss_epoch_val = l_recons_epoch_val = l_temporal_epoch_val = l_reg_epoch_val = 0
+            loss_epoch_val = l_recons_epoch_val = l_temporal_epoch_val = l_grad_epoch_val = 0
             for i, batch in enumerate(val_loader):
                 loss = 0
-                inputs, targets, albedo, motion, rgb_in, normal_vanilla, depth = (batch[x].to(device) for x in ['inputs', 'targets', 'albedo', 'motion', 'rgb_in', 'normal_vanilla', 'depth'])
+                inputs, targets, albedo = (batch[x].to(device) for x in ['inputs', 'targets', 'albedo'])
                 N, M, C, H, W = targets.shape
                 outputs = torch.zeros(N, M, C, H, W, device=device)
-                params_a = torch.zeros(N, M, 3, H, W, device=device)
-                params_b = torch.zeros(N, M, H, W, device=device)
 
                 for j in range(M):
-                    output, params_a[:, j], params_b[:, j] = model(inputs[:, j], motion[:, j], rgb_in[:, j], normal_vanilla[:, j], depth[:, j]) 
-                    outputs[:, j] = output * (albedo[:, j] + 1e-2)
+                    output = model(inputs[:, j]) 
+                    outputs[:, j] = output * albedo[:, j]
 
-                l_recons = SMAPE(outputs, targets)
-                l_temporal = 0.25 * SMAPE(*finite_differencing(outputs, targets))
-                l_reg = 1e-5 * reg_loss(params_a, params_b)
-                loss = l_recons + l_temporal + l_reg
+                l_recons = 0.8 * l1(outputs, targets)
+                l_temporal = 0.1 * l1(*finite_differencing(outputs, targets))
+                l_grad = 0.1 * l1(LoG_filter(outputs), LoG_filter(targets))
+                loss = l_recons + l_temporal + l_grad
                 
-                model.clear_state()
+                model.clear_hidden_state()
 
                 if save_renders is not None and i % ((val_len - 1) // save_renders) == 0:
                     render_filepath = os.path.join(render_dir, 'val', f'{identifier}-val-{epoch}-{i}.png')
@@ -218,8 +217,8 @@ def train_model(
                 loss_epoch_val += loss
                 l_recons_epoch_val += l_recons
                 l_temporal_epoch_val += l_temporal
-                l_reg_epoch_val += l_reg
-                logging.info(f'Epoch {epoch_str}/{num_epochs} Val. Batch {batch_str}/{val_len} | L: {loss_epoch_val/(i+1):.5f} LR: {l_recons_epoch_val/(i+1):.5f} LT: {l_temporal_epoch_val/(i+1):.5f} Lreg: {l_reg_epoch_val/(i+1):.5f}')
+                l_grad_epoch_val += l_grad
+                logging.info(f'Epoch {epoch_str}/{num_epochs} Val. Batch {batch_str}/{val_len} | L: {loss_epoch_val/(i+1):.5f} LR: {l_recons_epoch_val/(i+1):.5f} LT: {l_temporal_epoch_val/(i+1):.5f} LG: {l_grad_epoch_val/(i+1):.5f}')
 
         scheduler.step()
                 
@@ -263,7 +262,7 @@ def main():
     logging.info(f'Using device {device}')
     
     logging.info('Initializing Autoencoder...')
-    model = IsikNet(in_channel=9, embedding_dims=32, kernel_size=args.kernel_size, device=device)
+    model = Autoencoder(in_channel=7, kernel_size=args.kernel_size)
     
     logging.info('Transferring Autoencoder to GPU...')
     model.to(device=device)
@@ -272,14 +271,14 @@ def main():
         model=model,
         device=device,
         num_epochs=args.num_epochs,
-        batch_size=args.batch_size,
-        learning_rate=1e-4,
+        batch_size=4,
+        learning_rate=1e-3,
         decay_rates=(0.9,0.999),
         val_frac=0.2,
         save_checkpoint=True,
         crop_size=128,
         mod_interval=(0,2),
-        sequence_len=args.seq_len,
+        sequence_len=7,
         checkpoint_dir=os.path.join(args.output_dir, 'checkpoint'),
         plot_dir=os.path.join(args.output_dir, 'plot'),
         render_dir=os.path.join(args.output_dir, 'render'),
@@ -288,7 +287,8 @@ def main():
         dataset_dir=args.dataset_dir,
         save_renders=args.save_renders,
         patience=args.patience,
-        min_delta=args.min_delta
+        min_delta=args.min_delta,
+        hdr_normals=args.hdr_normals
     )
 
     logging.shutdown()

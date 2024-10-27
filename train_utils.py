@@ -1,13 +1,26 @@
+# train_utils.py
+
 import torch
 import torch.nn.functional as F
 import torchvision
 import matplotlib
-matplotlib.use('Agg')
+#matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 import os
 
-def flow_warp_utils(prev_buffer, mv, mode, device):
+def show_tensor(tensor):
+    # Transpose the tensor to HxWxC
+    tensor = tensor.permute(1, 2, 0).cpu()
+
+    # Convert to NumPy array
+    image = tensor.numpy()
+
+    # Display the image
+    plt.imshow(image)
+    plt.show()
+
+def flow_warp(prev_buffer, mv, mode, device):
     """Returns new tensor containing pixels in frame t-1 (prev_buffer) at their locations in frame t (proj_buffer) using flow field vectors
     mv          : N x 4 x H x W | [:2] Describes sample motion (t -> t-1) in screen-space
     prev_buffer : N x C x H x W | Pixels at t-1"""
@@ -87,7 +100,7 @@ def SMAPE(A, B):
 
     abs_diff = torch.abs(A-B)
     abs_sum = torch.abs(A) + torch.abs(B)
-    eps = 1e-10 
+    eps = 1e-10
 
     return (abs_diff/(abs_sum + eps)).mean()
 
@@ -116,11 +129,11 @@ def finite_differencing_single(outputs, targets):
     with torch.no_grad():
         return (outputs[:, 1] - outputs[:, 0]), (targets[:, 1] - targets[:, 0])
 
-def save_sequence_test(inputs, targets, outputs, title, filename): 
+def save_sequence_test(inputs, outputs, targets, title, filename): 
     with torch.no_grad():
-        display = np.concatenate((unrolled_inputs := unroll_sequence(inputs[:, :, :3, ...], 1), 
-                                  unrolled_outputs := unroll_sequence(outputs, 1), 
-                                  unrolled_targets := unroll_sequence(targets, 1)
+        display = np.concatenate((unroll_sequence(inputs[:, :, :3, ...], 1), 
+                                  unroll_sequence(outputs, 1), 
+                                  unroll_sequence(targets, 1)
                                   ), axis=0)
         
         display = np.clip(display, a_min=0.0, a_max=1.0)
@@ -135,10 +148,10 @@ def save_sequence_test(inputs, targets, outputs, title, filename):
 
 def save_sequence(inputs, targets, outputs, title, filename): 
     with torch.no_grad():
-        display = np.concatenate((unrolled_inputs := unroll_sequence(inputs[:, :, :3, ...], 7), 
-                                  unrolled_normals := unroll_sequence(inputs[:, :, 3:6, ...], 7),
-                                  unrolled_outputs := unroll_sequence(outputs, 7), 
-                                  unrolled_targets := unroll_sequence(targets, 7)
+        display = np.concatenate((unroll_sequence(inputs[:, :, :3, ...], 7), 
+                                  unroll_sequence(inputs[:, :, 3:6, ...], 7),
+                                  unroll_sequence(outputs, 7), 
+                                  unroll_sequence(targets, 7)
                                   ), axis=0)
         
         display = np.clip(display, a_min=0.0, a_max=1.0)
